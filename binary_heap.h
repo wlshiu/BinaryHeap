@@ -34,27 +34,37 @@ typedef enum priq_err
     PRIQ_ERR_UNKNOWN,
 } priq_err_t;
 
-typedef void*   priq_priority_t;
+/**
+ *  priority type
+ */
+typedef struct priq_priority
+{
+    union {
+        void                *ptr;
+        unsigned int        u32_value;
+        unsigned long long  u64_value;
+    } u;
+} priq_priority_t;
 
 /** callback functions to get/set/compare the priority of an element */
-typedef priq_priority_t (*CB_PRIORITY_GET)(void *pNode);
-typedef void (*CB_PRIORITY_SET)(void *pNode, priq_priority_t node_priority);
+typedef priq_priority_t* (*CB_PRIORITY_GET)(void *pNode);
+typedef void (*CB_PRIORITY_SET)(void *pNode, priq_priority_t *pNode_priority);
 
 /**
  *  compare 2 nodes priority,
  *  return 'true'   => change nodes
  *         'false'  => keep state
  */
-typedef int (*CB_PRIORITY_CMP)(priq_priority_t next_node, priq_priority_t cur_node);
+typedef int (*CB_PRIORITY_CMP)(priq_priority_t *pNext_node, priq_priority_t *pCur_node);
 
 
-/** callback functions to get/set the position of an element */
-typedef size_t (*CB_POSITION_GET)(void *pNode);
-typedef void (*CB_POSITION_SET)(void *pNode, int position);
+/** callback functions to get/set the position of an element in internal node list */
+typedef int (*CB_POSITION_GET)(void *pNode);
+typedef void (*CB_POSITION_SET)(void *pNode, int index);
 
 
 /** debug callback function to print a entry */
-typedef void (*CB_PRINT_ENTRY)(FILE *out, void *pNode);
+typedef void (*CB_PRINT_ENTRY)(void *pOut_dev, void *pNode, void *pExtra);
 //=============================================================================
 //                  Macro Definition
 //=============================================================================
@@ -62,16 +72,19 @@ typedef void (*CB_PRINT_ENTRY)(FILE *out, void *pNode);
 //=============================================================================
 //                  Structure Definition
 //=============================================================================
+/**
+ *  init info
+ */
 typedef struct priq_init_info
 {
     int         amount_nodes;
 
-    CB_PRIORITY_GET     pf_pri_get;
-    CB_PRIORITY_SET     pf_pri_set;
-    CB_PRIORITY_CMP     pf_pri_cmp;
+    CB_PRIORITY_GET     cb_pri_get;
+    CB_PRIORITY_SET     cb_pri_set;
+    CB_PRIORITY_CMP     cb_pri_cmp;
 
-    CB_POSITION_GET     pf_pos_get;
-    CB_POSITION_SET     pf_pos_set;
+    CB_POSITION_GET     cb_pos_get;
+    CB_POSITION_SET     cb_pos_set;
 
 } priq_init_info_t;
 
@@ -101,6 +114,45 @@ priq_create(
 
 priq_err_t
 priq_destroy(priq_t  **ppHPriq);
+
+
+priq_err_t
+priq_node_push(
+    priq_t      *pHPriq,
+    void        *pNode);
+
+
+priq_err_t
+priq_node_pop(
+    priq_t      *pHPriq,
+    void        **ppNode);
+
+
+priq_err_t
+priq_node_change_priority(
+    priq_t              *pHPriq,
+    priq_priority_t     *pNew_pri,
+    void                *pNode);
+
+
+priq_err_t
+priq_node_peek(
+    priq_t              *pHPriq,
+    void                **ppNode);
+
+
+priq_err_t
+priq_node_remove(
+    priq_t      *pHPriq,
+    void        *pNode);
+
+
+priq_err_t
+priq_print(
+    priq_t          *pHPriq,
+    void            *pOut_device,
+    void            *pExtra,
+    CB_PRINT_ENTRY  cb_print);
 
 
 #ifdef __cplusplus

@@ -52,7 +52,7 @@
     #define STRUCTURE_POINTER(type, ptr, member)    (type*)((unsigned long)ptr - MEMBER_OFFSET(type, member))
 #endif
 
-#define priq_l_verify_handle(handle, err_code)          \
+#define priq_verify_handle(handle, err_code)            \
             do{ if(handle==NULL){                       \
                 err("%s", "input Null pointer !!\n");   \
                 return err_code;}                       \
@@ -73,15 +73,15 @@ typedef struct priq_dev
 
     pthread_mutex_t     mutex;
 
-    int                 cur_node_cnt;
-    int                 avail_nodes;
+    int                 node_cnt;
+    long                max_nodes;
 
-    CB_PRIORITY_GET     pf_pri_get;
-    CB_PRIORITY_SET     pf_pri_set;
-    CB_PRIORITY_CMP     pf_pri_cmp;
+    CB_PRIORITY_GET     cb_pri_get;
+    CB_PRIORITY_SET     cb_pri_set;
+    CB_PRIORITY_CMP     cb_pri_cmp;
 
-    CB_POSITION_GET     pf_pos_get;
-    CB_POSITION_SET     pf_pos_set;
+    CB_POSITION_GET     cb_pos_get;
+    CB_POSITION_SET     cb_pos_set;
 
 
     void                **ppNode_list;
@@ -97,51 +97,83 @@ typedef struct priq_dev
 static void
 _bubble_up(
     priq_dev_t  *pDev,
-    int         start_idx)
+    long        idx)
 {
-    return;
+    long                parent_idx = 0l;
+    void                **ppNode_list = pDev->ppNode_list;
+    void                *pCur_node = 0;
+    priq_priority_t     *pCur_node_pri = 0;
+    CB_PRIORITY_GET     cb_pri_get = pDev->cb_pri_get;
+    CB_PRIORITY_CMP     cb_pri_cmp = pDev->cb_pri_cmp;
+    CB_POSITION_SET     cb_pos_set = pDev->cb_pos_set;
 
-    #if 0
-    size_t parent_node;
-    void *moving_node = q->d[i];
-    pqueue_pri_t moving_pri = q->getpri(moving_node);
+    pCur_node     = ppNode_list[idx];
+    pCur_node_pri = cb_pri_get(pCur_node);
 
-    for (parent_node = parent(i);
-         ((i > 1) && q->cmppri(q->getpri(q->d[parent_node]), moving_pri));
-         i = parent_node, parent_node = parent(i))
+    for(parent_idx = PARENT(idx);
+        (idx > 1) && cb_pri_cmp(cb_pri_get(ppNode_list[parent_idx]), pCur_node_pri);
+        idx = parent_idx, parent_idx = PARENT(idx))
     {
-        q->d[i] = q->d[parent_node];
-        q->setpos(q->d[i], i);
+        ppNode_list[idx] = ppNode_list[parent_idx];
+        cb_pos_set(ppNode_list[idx], (int)idx);
     }
 
-    q->d[i] = moving_node;
-    q->setpos(moving_node, i);
-    #endif
+    ppNode_list[idx] = pCur_node;
+    cb_pos_set(pCur_node, (int)idx);
+
+    return;
+}
+
+static long
+_get_child_idx(
+    priq_dev_t  *pDev,
+    long        idx)
+{
+    long                child_idx = LEFT(idx);
+    void                **ppNode_list = pDev->ppNode_list;
+    CB_PRIORITY_GET     cb_pri_get = pDev->cb_pri_get;
+    CB_PRIORITY_CMP     cb_pri_cmp = pDev->cb_pri_cmp;
+
+    if( child_idx >= pDev->node_cnt )
+        return 0l;
+
+    // choice left or right child node
+    if( (child_idx + 1) < pDev->node_cnt &&
+        cb_pri_cmp(cb_pri_get(ppNode_list[child_idx]), cb_pri_get(ppNode_list[child_idx+1])) )
+        child_idx++; // select right child node
+
+    return child_idx;
 }
 
 static void
 _percolate_down(
     priq_dev_t  *pDev,
-    int         start_idx)
+    long        idx)
 {
-    return;
+    long                child_idx = 0l;
+    void                **ppNode_list = pDev->ppNode_list;
+    void                *pCur_node = 0;
+    priq_priority_t     *pCur_node_pri = 0;
+    CB_PRIORITY_GET     cb_pri_get = pDev->cb_pri_get;
+    CB_PRIORITY_CMP     cb_pri_cmp = pDev->cb_pri_cmp;
+    CB_POSITION_SET     cb_pos_set = pDev->cb_pos_set;
 
-    #if 0
-    size_t child_node;
-    void *moving_node = q->d[i];
-    pqueue_pri_t moving_pri = q->getpri(moving_node);
+    pCur_node     = ppNode_list[idx];
+    pCur_node_pri = cb_pri_get(pCur_node);
 
-    while ((child_node = maxchild(q, i)) &&
-           q->cmppri(moving_pri, q->getpri(q->d[child_node])))
+    while( (child_idx = _get_child_idx(pDev, idx)) &&
+            cb_pri_cmp(pCur_node_pri, cb_pri_get(ppNode_list[child_idx])) )
     {
-        q->d[i] = q->d[child_node];
-        q->setpos(q->d[i], i);
-        i = child_node;
+        ppNode_list[idx] = ppNode_list[child_idx];
+        cb_pos_set(ppNode_list[idx], (int)idx);
+
+        idx = child_idx;
     }
 
-    q->d[i] = moving_node;
-    q->setpos(moving_node, i);
-    #endif
+    ppNode_list[idx] = pCur_node;
+    cb_pos_set(pCur_node, (int)idx);
+
+    return;
 }
 //=============================================================================
 //                  Public Function Definition
@@ -155,15 +187,15 @@ priq_create(
     priq_dev_t      *pDev = 0;
 
     do {
-        if( !ppHPriq || !(*ppHPriq) || !pInit_info )
+        if( !ppHPriq || (*ppHPriq) || !pInit_info )
         {
             err("%s", "input null pointer\n");
             rval = PRIQ_ERR_INVALID_PARAM;
             break;
         }
 
-        if( !pInit_info->pf_pri_get || !pInit_info->pf_pri_set || !pInit_info->pf_pri_cmp ||
-            !pInit_info->pf_pos_get || !pInit_info->pf_pos_set )
+        if( !pInit_info->cb_pri_get || !pInit_info->cb_pri_set || !pInit_info->cb_pri_cmp ||
+            !pInit_info->cb_pos_get || !pInit_info->cb_pos_set )
         {
             err("%s", "callback can't be null \n");
             rval = PRIQ_ERR_INVALID_PARAM;
@@ -188,23 +220,24 @@ priq_create(
         }
 
         // element 0 isn't used for mapping indxe and count.
-        pDev->avail_nodes  = pInit_info->amount_nodes + 1;
-        pDev->cur_node_cnt = 1;
+        pDev->max_nodes = pInit_info->amount_nodes + 1;
+        pDev->node_cnt  = 1;
 
-        pDev->pf_pri_get = pInit_info->pf_pri_get;
-        pDev->pf_pri_set = pInit_info->pf_pri_set;
-        pDev->pf_pri_cmp = pInit_info->pf_pri_cmp;
-        pDev->pf_pos_get = pInit_info->pf_pos_get;
-        pDev->pf_pos_set = pInit_info->pf_pos_set;
+        pDev->cb_pri_get = pInit_info->cb_pri_get;
+        pDev->cb_pri_set = pInit_info->cb_pri_set;
+        pDev->cb_pri_cmp = pInit_info->cb_pri_cmp;
+        pDev->cb_pos_get = pInit_info->cb_pos_get;
+        pDev->cb_pos_set = pInit_info->cb_pos_set;
 
-        if( !(pDev->ppNode_list = malloc(sizeof(void*) * pDev->avail_nodes)) )
+        if( !(pDev->ppNode_list = malloc(sizeof(void*) * pDev->max_nodes)) )
         {
-            err("malloc node list fail, size= %d\n", sizeof(void*) * pDev->avail_nodes);
+            err("malloc node list fail, size= %d\n", sizeof(void*) * pDev->max_nodes);
             rval = PRIQ_ERR_MALLOC_FAIL;
             break;
         }
+        memset(pDev->ppNode_list, 0x0, sizeof(void*) * pDev->max_nodes);
 
-        pDev->hPriq.remain_num = pDev->cur_node_cnt - 1;
+        pDev->hPriq.remain_num = pDev->node_cnt - 1;
         //------------------------
         *ppHPriq = &pDev->hPriq;
 
@@ -262,23 +295,27 @@ priq_node_push(
     priq_err_t      rval = PRIQ_ERR_OK;
     priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
 
-    priq_l_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
-    priq_l_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
 
     priq_mutex_lock(&pDev->mutex);
 
     do {
         int     idx = 0;
-        if( pDev->cur_node_cnt >= pDev->avail_nodes )
+
+        if( pDev->node_cnt >= pDev->max_nodes )
         {
-            err("queue full %d/%d\n", pDev->cur_node_cnt, pDev->avail_nodes);
+            err("queue full %d/%d\n", pDev->node_cnt, pDev->max_nodes);
             rval = PRIQ_ERR_QUEUE_FULL;
             break;
         }
 
-        idx = pDev->cur_node_cnt++;
+        idx = pDev->node_cnt++;
         pDev->ppNode_list[idx] = pNode;
+
         _bubble_up(pDev, idx);
+
+        pDev->hPriq.remain_num = pDev->node_cnt - 1;
 
     } while(0);
 
@@ -295,13 +332,15 @@ priq_node_pop(
     priq_err_t      rval = PRIQ_ERR_OK;
     priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
 
-    priq_l_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
-    priq_l_verify_handle(ppNode, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(ppNode, PRIQ_ERR_INVALID_PARAM);
 
     priq_mutex_lock(&pDev->mutex);
 
     do {
-        if( pDev->cur_node_cnt == 1 )
+        *ppNode = NULL;
+
+        if( pDev->node_cnt == 1 )
         {
             err("%s", "queue is empty \n");
             rval = PRIQ_ERR_QUEUE_EMPTY;
@@ -310,8 +349,10 @@ priq_node_pop(
 
         *ppNode = pDev->ppNode_list[1];
 
-        pDev->ppNode_list[1] = pDev->ppNode_list[--pDev->cur_node_cnt];
+        pDev->ppNode_list[1] = pDev->ppNode_list[--pDev->node_cnt];
         _percolate_down(pDev, 1);
+
+        pDev->hPriq.remain_num = pDev->node_cnt - 1;
 
     } while(0);
 
@@ -323,21 +364,31 @@ priq_node_pop(
 priq_err_t
 priq_node_change_priority(
     priq_t              *pHPriq,
-    priq_priority_t     new_pri,
+    priq_priority_t     *pNew_pri,
     void                *pNode)
 {
     priq_err_t      rval = PRIQ_ERR_OK;
     priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
 
-    priq_l_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
-    priq_l_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pNew_pri, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
 
     priq_mutex_lock(&pDev->mutex);
 
     do {
+        int                 cur_idx = 0;
+        priq_priority_t     cur_node_pri = {{0}};
 
+        cur_node_pri = *(pDev->cb_pri_get(pNode));
 
+        pDev->cb_pri_set(pNode, pNew_pri);
+        cur_idx = pDev->cb_pos_get(pNode);
 
+        if( pDev->cb_pri_cmp(&cur_node_pri, pNew_pri) )
+            _bubble_up(pDev, cur_idx);
+        else
+            _percolate_down(pDev, cur_idx);
 
     } while(0);
 
@@ -354,20 +405,22 @@ priq_node_peek(
     priq_err_t      rval = PRIQ_ERR_OK;
     priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
 
-    priq_l_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
-    priq_l_verify_handle(ppNode, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(ppNode, PRIQ_ERR_INVALID_PARAM);
 
     priq_mutex_lock(&pDev->mutex);
 
     do {
-        if( pDev->cur_node_cnt == 1 )
+        *ppNode = NULL;
+
+        if( pDev->node_cnt == 1 )
         {
             err("%s", "queue is empty \n");
             rval = PRIQ_ERR_QUEUE_EMPTY;
             break;
         }
 
-
+        *ppNode = pDev->ppNode_list[1];
 
     } while(0);
 
@@ -378,21 +431,27 @@ priq_node_peek(
 
 priq_err_t
 priq_node_remove(
-    priq_t              *pHPriq,
-    void                *pNode)
+    priq_t      *pHPriq,
+    void        *pNode)
 {
     priq_err_t      rval = PRIQ_ERR_OK;
     priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
 
-    priq_l_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
-    priq_l_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+    priq_verify_handle(pNode, PRIQ_ERR_INVALID_PARAM);
 
     priq_mutex_lock(&pDev->mutex);
 
     do {
+        long         cur_idx = 0l;
 
+        cur_idx = (long)pDev->cb_pos_get(pNode);
+        pDev->ppNode_list[cur_idx] = pDev->ppNode_list[--pDev->node_cnt];
 
-
+        if( pDev->cb_pri_cmp(pDev->cb_pri_get(pNode), pDev->cb_pri_get(pDev->ppNode_list[cur_idx])))
+            _bubble_up(pDev, cur_idx);
+        else
+            _percolate_down(pDev, cur_idx);
 
     } while(0);
 
@@ -401,11 +460,9 @@ priq_node_remove(
     return rval;
 }
 
-
 void
-priq_print(
+priq_node_search(
     priq_t          *pHPriq,
-    FILE            *out,
     CB_PRINT_ENTRY  pf_print)
 {
     #if 0
@@ -426,5 +483,80 @@ priq_print(
 
     pqueue_free(dup);
     #endif
+}
+
+static void
+_print_set_pos(void *pNode, int idx)
+{
+    /* when print, do nothing */
+    return;
+}
+
+
+static void
+_print_set_pri(void *pNode, priq_priority_t *pPri)
+{
+    /* when print, do nothing */
+    return;
+}
+
+priq_err_t
+priq_print(
+    priq_t          *pHPriq,
+    void            *pOut_device,
+    void            *pExtra,
+    CB_PRINT_ENTRY  cb_print)
+{
+    priq_err_t      rval = PRIQ_ERR_OK;
+    priq_dev_t      *pDev = STRUCTURE_POINTER(priq_dev_t, pHPriq, hPriq);
+
+    priq_verify_handle(pHPriq, PRIQ_ERR_INVALID_PARAM);
+
+    priq_mutex_lock(&pDev->mutex);
+
+    do {
+        priq_dev_t          dup_dev = {{0}};
+        void                **ppNode_list = 0, *pNode = 0;
+
+        if( pDev->node_cnt == 1 )
+        {
+            err("%s", "queue is empty \n");
+            break;
+        }
+
+        dup_dev.max_nodes  = pDev->max_nodes;
+        dup_dev.node_cnt   = pDev->node_cnt;
+        dup_dev.cb_pri_get = pDev->cb_pri_get;
+        dup_dev.cb_pri_cmp = pDev->cb_pri_cmp;
+        dup_dev.cb_pos_get = pDev->cb_pos_get;
+
+        dup_dev.cb_pri_set = _print_set_pri;
+        dup_dev.cb_pos_set = _print_set_pos;
+
+        if( !(ppNode_list = malloc(sizeof(void*) * (dup_dev.node_cnt + 1))) )
+        {
+            err("malloc node list fail, size= %d\n", sizeof(void*) * (dup_dev.node_cnt + 1));
+            break;
+        }
+
+        dup_dev.ppNode_list = ppNode_list;
+
+        memcpy(ppNode_list, pDev->ppNode_list, sizeof(void*) * dup_dev.node_cnt);
+
+        while( dup_dev.node_cnt > 1 &&
+               (pNode = ppNode_list[1]) )
+        {
+            ppNode_list[1] = ppNode_list[--dup_dev.node_cnt];
+
+            _percolate_down(&dup_dev, 1);
+
+            cb_print(pOut_device, pNode, pExtra);
+        }
+
+        free(ppNode_list);
+    } while(0);
+
+    priq_mutex_unlock(&pDev->mutex);
+    return rval;
 }
 
